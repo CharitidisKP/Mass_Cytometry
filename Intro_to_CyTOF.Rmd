@@ -15,7 +15,16 @@ github_packages <- c("nolanlab/cytofCore", "JinmiaoChenLab/cytofkit2", "cytolab/
 
 ```{r Load the libraries}
 
+## ArcSinh transformation libraries ##
+library(MASS)
+
+## General ##
 library(flowCore)
+library(tidyverse)
+library(RColorBrewer)
+library(ggplot2)
+library(cowplot)
+library(reshape2)
 
 ```
 
@@ -77,8 +86,82 @@ table_wholeness <- table(is_whole(Exp_matrix[, c(Pregating_Channels,
 Exp_matrix_clean <- derandomize(
   Exp_matrix,
   measure_ch = c(Lineage_Channels, Pregating_Channels),
-  other_ch = instrument_ch)
+  other_ch = Instrument_Channels)
 
 
+```
+
+```{r ArcSinh transformation}
+
+## Make arcsinh transformed expression matrix using a cofactor of 5##
+## (with the exception of time and event_length, which should remain linear) ##
+selections <- c(Lineage_Channels, Pregating_Channels[1:4], Instrument_Channels)
+
+Exp_data <- Exp_matrix %>% 
+  as_tibble() %>% 
+  dplyr::select(all_of(selections))
+
+Exp_data_trans <- Exp_matrix %>% 
+  as_tibble() %>% 
+  mutate(across(.cols = all_of(c(Lineage_Channels, Pregating_Channels[1:4])), 
+                .fns = ~ asinh(.x / 5), 
+                .names = "{.col}")) %>% 
+  dplyr::select(all_of(selections))
+
+## Plot two-marker example of transformation effect ##
+p1 <- ggplot(Exp_data, aes(x = CD8, y = CD4)) +
+  geom_point(color = 'grey', size = 0.05, alpha = 0.6) +
+  geom_density2d() +
+  ggtitle('CD4 vs CD8') +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+p2 <- ggplot(Exp_data_trans, aes(x = CD8, y = CD4)) +
+  geom_point(color = 'grey', size = 0.05, alpha = 0.6) +
+  geom_density2d() +
+  ggtitle('CD4 vs CD8 (transformed counts)') +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot_grid(p1, p2, align = 'v', scale = 0.9)
+
+```
+
+```{r Ion counts}
+
+Exp_data_long <- Exp_data %>%
+  mutate(Cell_id = row_number()) %>% 
+  pivot_longer(cols = all_of(Lineage_Channels),
+               names_to = "Channel",
+               values_to = "Value") %>% 
+  mutate(Origin = "Raw")
+
+# 2. Pivot the transformed data long
+Exp_data_trans_long <- Exp_data_trans %>%
+  mutate(Cell_id = row_number()) %>% 
+  pivot_longer(cols = all_of(Lineage_Channels),
+               names_to = "Channel",
+               values_to = "Value") %>% 
+  mutate(Origin = "Transformed")
+
+# 3. If you want them in one combined table for direct comparison:
+Exp_Comparison <- rbind(Exp_data_long, Exp_data_trans_long)
+
+ggplot(Exp_Comparison, aes(x = Value, color = Channel)) +
+  geom_density() +
+  facet_wrap(~ Origin, scales = "free") +
+  labs(x = "Intensity", y = "Density",
+       title = "Raw vs asinh-transformed distributions") +
+  theme_minimal()
+
+
+
+
+```
+
+
+```{r}
+
+colnames(Exp_matrix)
 ```
 
