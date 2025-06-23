@@ -3,40 +3,45 @@ title: "Intro_to_CyTOF"
 output: html_document
 ---
 
+```{r Packages nessecary for mass cytometry analysis}
+
+cran_packages <- c("scales", "ggplot2", "dplyr", "ggridges", "RColorBrewer", "MASS", "Rtsne", "kohonen", "miscTools", "gplots", "Radviz", "igraph", "statmod", "devtools", "uwot", "cowplot", "limma", "matrixcalc", "plotrix", "JPEN", "VCA")
+
+bioc_packages <- c("flowCore", "ConsensusClusterPlus", "cydar", "CATALYST", "ncdfFlow", "edgeR", "HDCytoData")
+
+github_packages <- c("nolanlab/cytofCore", "JinmiaoChenLab/cytofkit2", "cytolab/mem", "biosurf/cyCombine")
+
+```
+
 ```{r Load the libraries}
 
 library(flowCore)
-library()
 
 ```
 
-```{r}
-
-BiocManager::install("")
-
-```
 
 ```{r Load the files}
 
-FCS_file_list <- list.files(path = "~/SLE/3TR/Base_Files", pattern = ".fcs", full.names = TRUE, ignore.case = TRUE)
+FCS_file_list <- list.files(path = "~/SLE/3TR/Tutorial/Files/", pattern = ".fcs", full.names = TRUE, ignore.case = TRUE)
 
 ## Load the first FCS file from the list ## 
-FCS_Files <- read.FCS(filename = FCS_file_list[1], transformation = FALSE, truncate_max_range = FALSE)
+FCS_File_1 <- read.FCS(filename = FCS_file_list[1], transformation = FALSE, truncate_max_range = FALSE)
 
 ## To load all files: ##
-FCS_Files <- read.flowSet(files = FCS_file_list, transformation = FALSE, truncate_max_range = FALSE)
+# FCS_Files <- read.flowSet(files = FCS_file_list, transformation = FALSE, truncate_max_range = FALSE)
 
 ## Extract the expression matrix ##
-Exp_matrix <- FCS_Files$exprs
-FCS_Files$parameters$data
+Exp_matrix <- FCS_File_1@exprs
+FCS_Files@parameters@data
 
 ## Make the files more readable ##
-Markers <- gsub(pattern = ".*_", replacement = "", x = as.vector(FCS_Files$parameters$data$desc)) ## The tutorial has it with @ FCS_Files@parameters@data$desc
+Markers <- gsub(pattern = ".*_", replacement = "", x = as.vector(FCS_File_1@parameters@data$desc)) ## The tutorial has it with @ FCS_Files@parameters@data$desc
 colnames(Exp_matrix)[which(!is.na(Markers))] <- Markers[which(!is.na(Markers))] ## Re do this with the tidyverse
 
 ```
 
 ```{r Data preprocessing}
+
 Pregating_Channels <- c("Bead", "DNA1", "DNA2", "Dead", "Event_length")
 
 Lineage_Channels <- c("CD57", "CD19", "CD4", "CD8", "IgD", "CD11c",
@@ -45,6 +50,34 @@ Lineage_Channels <- c("CD57", "CD19", "CD4", "CD8", "IgD", "CD11c",
                       "CD161", "TCRgd", "CD123", "CD56", "HLADR", "CD25")
 
 Instrument_Channels <- c("Time", "Event_length", "Center", "Offset", "Width", "Residual")
+
+```
+
+```{r Check for randomised values}
+
+# 2. Helper functions
+is_whole <- function(x, tol = .Machine$double.eps^0.5) {
+  abs(x - round(x)) < tol
+}
+
+derandomize <- function(mat, measure_ch, other_ch) {
+  derand <- ceiling(mat[, measure_ch])
+  cbind(derand, mat[, other_ch, drop = FALSE])
+}
+
+## Apply the checks and derandomisation ##
+non_int_counts <- sum(!is_whole(Exp_matrix[, c(Pregating_Channels, 
+                                               Lineage_Channels)]))
+
+## Show summary ##
+table_wholeness <- table(is_whole(Exp_matrix[, c(Pregating_Channels, 
+                                                 Lineage_Channels)]))
+
+## Derandomize measured channels if necessary ##
+Exp_matrix_clean <- derandomize(
+  Exp_matrix,
+  measure_ch = c(Lineage_Channels, Pregating_Channels),
+  other_ch = instrument_ch)
 
 
 ```
