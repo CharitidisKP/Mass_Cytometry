@@ -25,6 +25,9 @@ library(RColorBrewer)
 library(ggplot2)
 library(cowplot)
 library(reshape2)
+library(purrr)
+library(stringr)
+library(ggridges)
 
 ```
 
@@ -41,7 +44,7 @@ FCS_File_1 <- read.FCS(filename = FCS_file_list[1], transformation = FALSE, trun
 
 ## Extract the expression matrix ##
 Exp_matrix <- FCS_File_1@exprs
-FCS_Files@parameters@data
+FCS_File_1@parameters@data
 
 ## Make the files more readable ##
 Markers <- gsub(pattern = ".*_", replacement = "", x = as.vector(FCS_File_1@parameters@data$desc)) ## The tutorial has it with @ FCS_Files@parameters@data$desc
@@ -136,7 +139,6 @@ Exp_data_long <- Exp_data %>%
                values_to = "Value") %>% 
   mutate(Origin = "Raw")
 
-# 2. Pivot the transformed data long
 Exp_data_trans_long <- Exp_data_trans %>%
   mutate(Cell_id = row_number()) %>% 
   pivot_longer(cols = all_of(Lineage_Channels),
@@ -144,24 +146,226 @@ Exp_data_trans_long <- Exp_data_trans %>%
                values_to = "Value") %>% 
   mutate(Origin = "Transformed")
 
-# 3. If you want them in one combined table for direct comparison:
+## Combine the two dfs ##
 Exp_Comparison <- rbind(Exp_data_long, Exp_data_trans_long)
 
-ggplot(Exp_Comparison, aes(x = Value, color = Channel)) +
-  geom_density() +
-  facet_wrap(~ Origin, scales = "free") +
-  labs(x = "Intensity", y = "Density",
+## Plot them ##
+ggplot(Exp_Comparison, aes(x = Channel, y = Value, color = Channel)) +
+  geom_boxplot(outlier.size = 0.05) +
+  facet_wrap(~ Origin, scales = "free", ncol = 1) +
+  labs(x = "Channel", y = "Value",
        title = "Raw vs asinh-transformed distributions") +
-  theme_minimal()
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 0.5))
 
+```
 
+```{r Pregating prep}
+
+Expr_set <- FCS_file_list %>% 
+  set_names() %>% 
+  map_dfr(function(file) {
+    
+    ff <- read.FCS(filename = file, 
+                   transformation = FALSE, 
+                   truncate_max_range = FALSE)
+    
+    c_matrix <- exprs(ff)
+    
+    desc_data <- ff@parameters@data$desc
+    markers <- str_replace(desc_data, ".*_", "")
+    idx <- which(!is.na(markers))
+    
+    colnames(c_matrix)[idx] <- markers[idx]
+    
+    set.seed(134)
+    samp_idx <- sample(nrow(c_matrix), 10000)
+    sampled  <- c_matrix[samp_idx, , drop = FALSE]
+    
+    sampled %>% 
+      as_tibble() %>% 
+      mutate(Origin = basename(file))
+    
+  })
+
+Expr_set_trans <- Expr_set %>%
+  mutate(across(.cols = all_of(c(Pregating_Channels[1:4],
+                                 Lineage_Channels)),
+                .fns  = ~ asinh(.x / 5))) %>% 
+  select(all_of(c(Pregating_Channels[1:4], Lineage_Channels)),
+         all_of(Instrument_Channels), 
+         Origin)
 
 
 ```
 
+```{r Visualise pregating channels}
 
-```{r}
+cols <- brewer.pal(length(Pregating_Channels), "Set1")
+names(cols) <- Pregating_Channels
 
-colnames(Exp_matrix)
+Expr_set_trans %>% 
+  select(Origin, all_of(Pregating_Channels)) %>% 
+  pivot_longer(cols = all_of(Pregating_Channels), 
+               names_to = "Channel", 
+               values_to = "Value") %>% 
+  ggplot(., aes(x = Value, y = Origin, colour = Channel, fill = Channel)) +
+  geom_density_ridges2() +
+  facet_wrap(~ Channel, ncol = 5, scales = "free_x") +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values  = alpha(cols, 0.4)) +
+  theme_bw() +
+  theme(axis.text.y = element_blank(), 
+        strip.text = element_text(face = "bold")) +
+  ylab("")
+  
+```
+
+```{r Gating for cells}
+## Cells vs Beads ##
+
+h <- Expr_set_trans %>%
+  summarize(h1 = bandwidth.nrd(Bead),
+            h2 = bandwidth.nrd(DNA1)) %>%
+  summarize(h = max(h1, h2)) %>%
+  pull(h)
+
+Plot_1 <- Expr_set_trans %>% 
+ggplot(aes(x = Bead, y = DNA1)) +
+      geom_point(color = 'grey', size = 0.05, alpha = 0.6) +
+      geom_density2d(h = h) +
+      theme_bw()
+
+Gate_1 <- list(left = 0, right = 2.5, lower = 5, upper = 8.5)
+
+Cells_1 <- Expr_set_trans %>%
+  filter(Bead < Gate_1$right, DNA1 > Gate_1$lower, DNA1 < Gate_1$upper)
+
+Pct_in_gate <- nrow(Cells_1) / nrow(Expr_set_trans) * 100
+
+Plot_1 +
+  geom_rect(data = NULL, aes(xmin = Gate_1$left, 
+                             xmax = Gate_1$right, 
+                             ymin = Gate_1$lower, 
+                             ymax = Gate_1$upper), 
+            inherit.aes = FALSE, fill = NA, colour = "red", linetype = "dashed") +
+  annotate("text", x = Gate_1$right + 1, y = mean(c(Gate_1$lower, Gate_1$upper)), 
+           label = sprintf("Cells: %.2f%%", Pct_in_gate), 
+           colour = "red") + 
+  theme_bw()
+
+```
+
+```{r Gating for intact cells}
+## Cells vs Beads ##
+
+Plot_2 <- Cells_1 %>%
+  ggplot(aes(x = DNA1, y = DNA2)) +
+  geom_point(color = 'grey', size = 0.05, alpha = 0.6) +
+  coord_cartesian(xlim = c(5, 8), 
+                  ylim = c(5.5, 8.5)) +
+  geom_density2d() +
+  theme_bw()
+
+Gate_2 <- list(left = 5.75, right = 7.3, lower = 6.35, upper = 7.95)
+
+Cells_2 <- Cells_1 %>%
+  filter(DNA1 > Gate_2$left, 
+         DNA1 < Gate_2$right, 
+         DNA2 > Gate_2$lower, 
+         DNA2 < Gate_2$upper)
+
+Pct_intact <- nrow(Cells_2) / nrow(Cells_1) * 100
+
+Plot_2 +
+  geom_rect(data = NULL, aes(xmin = Gate_2$left, 
+                             xmax = Gate_2$right, 
+                             ymin = Gate_2$lower, 
+                             ymax = Gate_2$upper), 
+            inherit.aes = FALSE, fill = NA, colour = "red", linetype = "dashed") +
+  annotate("text", x = Gate_2$right + 0.4, y = mean(c(Gate_2$lower, Gate_2$upper)), 
+           label = sprintf("Cells: %.2f%%", Pct_intact), 
+           colour = "red") + 
+  theme_bw()
+
+```
+
+```{r Gating for singlets}
+## Cells vs Beads ##
+
+Plot_3 <- Cells_2 %>%
+  ggplot(aes(x = Event_length, y = DNA1)) +
+  geom_point(color = 'grey', size = 0.05, alpha = 0.6) +
+  coord_cartesian(ylim = c(0, 8)) +
+  geom_density2d() +
+  theme_bw()
+
+Gate_3 <- list(left = 12, right = 22, lower = 5.65, upper = 7.35)
+
+Cells_3 <- Cells_2 %>%
+  filter(Event_length > Gate_3$left, 
+         Event_length < Gate_3$right)
+
+Pct_singlets <- nrow(Cells_3) / nrow(Cells_2) * 100
+
+Plot_3 +
+  geom_rect(data = NULL, aes(xmin = Gate_3$left, 
+                             xmax = Gate_3$right, 
+                             ymin = Gate_3$lower, 
+                             ymax = Gate_3$upper), 
+            inherit.aes = FALSE, fill = NA, colour = "red", linetype = "dashed") +
+  annotate("text", y = Gate_2$lower - 1, x = mean(c(Gate_3$left, Gate_3$right)), 
+           label = sprintf("Intact singlets: %.2f%%", Pct_singlets), 
+           colour = "red") + 
+  theme_bw()
+
+```
+
+```{r Gating for live cells}
+## Cells vs Beads ##
+
+Plot_4 <- Cells_2 %>%
+  ggplot(aes(x = Dead, y = DNA1)) +
+  geom_point(color = 'grey', size = 0.05, alpha = 0.6) +
+  coord_cartesian(ylim = c(0, 8)) +
+  geom_density2d() +
+  theme_bw()
+
+Gate_4 <- list(left = 0, right = 3.5, lower = 5.65, upper = 7.35)
+
+Cells_4 <- Cells_3 %>%
+  filter(Dead < Gate_4$right)
+
+Pct_live <- nrow(Cells_4) / nrow(Cells_3) * 100
+
+Plot_4 +
+  geom_rect(data = NULL, aes(xmin = Gate_4$left, 
+                             xmax = Gate_4$right, 
+                             ymin = Gate_4$lower, 
+                             ymax = Gate_4$upper), 
+            inherit.aes = FALSE, fill = NA, colour = "red", linetype = "dashed") +
+  annotate("text", y = Gate_2$lower - 1, x = mean(c(Gate_4$left, Gate_4$right)), 
+           label = sprintf("Live and intact singlets: %.2f%%", Pct_live), 
+           colour = "red") + 
+  theme_bw()
+
+```
+
+
+```{r Print live cell percentage for each sample}
+
+for (orgn in unique(Expr_set_trans$Origin)) {
+  
+  Current_sample <- Expr_set_trans %>% 
+    filter(Origin == orgn)
+  
+  Current_live <- Cells_4 %>% 
+    filter(Origin == orgn)
+  
+  print(paste0("Total recovery for ", orgn, ": ", 
+               round(nrow(Current_live) / nrow(Current_sample) * 100, 
+                     digits = 2), "%", sep = ""))
+}
+
 ```
 
