@@ -369,3 +369,13 @@ for (orgn in unique(Expr_set_trans$Origin)) {
 
 ```
 
+
+
+
+```{r}
+
+read_csv("~/Downloads/1k_rawcount_exprMatrix.csv", n_max = 100)
+
+
+```
+
