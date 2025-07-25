@@ -3,16 +3,39 @@
 library(tidyverse)
 library(Seurat)
 library(Matrix)
+library(ff)
 
+# devtools::install_github('immunogenomics/presto')
+
+library(data.table)
 
 ```
 
 ```{r}
 
 Meta <- read.csv("~/Downloads/1k_metadata.csv", row.names = 1, stringsAsFactors = FALSE)
-Raw_Counts <- read.csv("~/Downloads/1k_rawcount_exprMatrix.csv", row.names = 1, stringsAsFactors = FALSE)
+# Raw_Counts <- read.csv("~/Downloads/1k_rawcount_exprMatrix.csv", row.names = 1, stringsAsFactors = FALSE)
 
-Counts_Sparse <- Matrix(as.matrix(Raw_Counts), sparse = TRUE) %>% 
+hdr_line <- readLines("~/Downloads/1k_normalized_exprMatrix.csv", n = 1)
+hdr_names <- strsplit(hdr_line, ",")[[1]]
+n_cols <- length(hdr_names) 
+
+col_classes <- c(
+  "factor",             # sample IDs in the first column
+  rep("numeric", n_cols-1) # normalized expression values
+)
+
+Norm_Counts <- read.csv.ffdf(file = "~/Downloads/1k_normalized_exprMatrix.csv", 
+                             header = TRUE, 
+                             first.rows = 1000, 
+                             next.rows = 50000, 
+                             colClasses = col_classes, 
+                             VERBOSE = TRUE)
+
+# Counts_Sparse <- Matrix(as.matrix(Raw_Counts), sparse = TRUE) %>% 
+#   t()
+
+Counts_Sparse <- Matrix(as.matrix(Norm_Counts), sparse = TRUE) %>% 
   t()
 
 dim(Counts_Sparse)
@@ -32,29 +55,101 @@ Seu_1K <- CreateSeuratObject(counts = Counts_Sparse, meta.data = Meta, assay = "
 
 ```{r}
 
-pbmc.data <- Read10X(data.dir = "~/Downloads/filtered_gene_bc_matrices/hg19/")
-pbmc <- CreateSeuratObject(counts = pbmc.data, project = "pbmc3k", min.cells = 3, min.features = 200)
+# pbmc.data <- Read10X(data.dir = "~/Downloads/filtered_gene_bc_matrices/hg19/")
+# pbmc <- CreateSeuratObject(counts = pbmc.data, project = "pbmc3k", min.cells = 3, min.features = 200)
+# 
+# pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+
 
 ```
 
 
-```{r}
+```{r QC and preprocessing}
 
-Slide_1_f1 <- Meta %>% 
-  # select(fov, slide_ID_numeric) %>% 
-  filter(fov == 1, slide_ID_numeric == 1) 
-
-VlnPlot(Seu_1K,
-        features = c("nFeature_Spatial", "nCount_Spatial", "percent.mt"),
+VlnPlot(Seu_1K, features = c("nFeature_Spatial", "nCount_Spatial"), 
         ncol = 3, pt.size = 0)
 
-Seu_1K <- FindVariableFeatures(Seu_1K, selection.method = "vst", nfeatures = 2000)
+Seu_1K[["percent.mt"]] <- PercentageFeatureSet(Seu_1K, pattern = "^MT-")
+FeatureScatter(Seu_1K, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+
+Seu_1K <- subset(Seu_1K, subset = nFeature_RNA > 100 & nFeature_RNA < 3000)
+
+# NormalizeData(Seu_1K, normalization.method = "LogNormalize", scale.factor = 10000) 
+Seu_1K <- NormalizeData(Seu_1K) ## Same command as above (default parameters) ##
+
+Seu_1K <- FindVariableFeatures(Seu_1K, selection.method = "vst", nfeatures = 1000)
 top_10 <- head(VariableFeatures(Seu_1K), 10)
 
 VF_plot <- VariableFeaturePlot(Seu_1K)
 
 VariableFeaturePlot(Seu_1K) +
   LabelPoints(plot = VF_plot, points = top_10, repel = TRUE)
+
+Genes_Total <- rownames(Seu_1K)
+Seu_1K <- ScaleData(Seu_1K, features = Genes_Total)
+
+```
+
+
+```{r Dimensionality reduction - PCA}
+
+Seu_1K <- RunPCA(Seu_1K, features = VariableFeatures(object = Seu_1K))
+
+print(Seu_1K[["pca"]], dims = 1:15, nfeatures = 5)
+
+DimPlot(Seu_1K, reduction = "pca") + NoLegend()
+DimHeatmap(Seu_1K, dims = 1:15, cells = 500, balanced = TRUE)
+
+ElbowPlot(Seu_1K)
+
+```
+
+```{r Clustering}
+
+
+Seu_1K <- FindNeighbors(Seu_1K, dims = 1:15)
+Seu_1K <- FindClusters(Seu_1K, resolution = 0.5)
+
+table(Idents(Seu_1K))
+
+head(Idents(Seu_1K), 10)
+
+
+
+```
+
+```{r Dimensionality reduction UMAP}
+
+Seu_1K <- RunUMAP(Seu_1K, dims = 1:15)
+DimPlot(Seu_1K, reduction = "umap")
+
+# saveRDS(Seu_1K, file = "~/SLE/3TR/Data/Output/1k_my_norm.RDS")
+
+```
+
+```{r}
+
+Markers_1k  <- FindAllMarkers(Seu_1K, only.pos = FALSE)
+
+Markers_1k %>% 
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1 & p_val_adj < 0.05) 
+
+Markers_ROC <- FindAllMarkers(Seu_1K, logfc.threshold = 0.5, test.use = "roc")
+
+Current_genes <- Markers_ROC %>% 
+  dplyr::filter(cluster == "0") %>% 
+  dplyr::pull(gene) %>% 
+  VlnPlot(Seu_1K, features = .)
+
+```
+
+
+
+
+
+
+```{r FOV visualisation}
 
 Meta %>% 
   mutate(xaxis = x_FOV_px * fov, 
@@ -63,6 +158,21 @@ Meta %>%
   ggplot(.) +
   geom_point(aes(x = xaxis, y = yaxis, colour = RNA_Export_Cell.Typing.InSituType.2_1_clusters)) +
   coord_fixed()
+
+```
+
+
+```{r}
+
+Norm_ff_genes <- read.csv.ffdf(
+  file       = "~/Downloads/1k_normalized_exprMatrix.csv",
+  header     = TRUE,
+  skip     = 1,                 
+  colClasses = col_classes,
+  first.rows = 1000,
+  next.rows  = 50000,
+  VERBOSE    = TRUE
+)
 
 ```
 
