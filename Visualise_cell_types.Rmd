@@ -4,10 +4,7 @@ library(tidyverse)
 library(Seurat)
 library(Matrix)
 library(ff)
-
-# devtools::install_github('immunogenomics/presto')
-
-library(data.table)
+library(presto)
 
 ```
 
@@ -20,13 +17,11 @@ hdr_line <- readLines("~/Downloads/1k_normalized_exprMatrix.csv", n = 1)
 hdr_names <- strsplit(hdr_line, ",")[[1]]
 n_cols <- length(hdr_names) 
 
-col_classes <- c(
-  "factor",             # sample IDs in the first column
-  rep("numeric", n_cols-1) # normalized expression values
-)
+col_classes <- c("factor", rep("numeric", n_cols - 1))
 
 Norm_Counts <- read.csv.ffdf(file = "~/Downloads/1k_normalized_exprMatrix.csv", 
                              header = TRUE, 
+                             skip = 1,
                              first.rows = 1000, 
                              next.rows = 50000, 
                              colClasses = col_classes, 
@@ -163,16 +158,6 @@ Meta %>%
 
 
 ```{r}
-
-Norm_ff_genes <- read.csv.ffdf(
-  file       = "~/Downloads/1k_normalized_exprMatrix.csv",
-  header     = TRUE,
-  skip     = 1,                 
-  colClasses = col_classes,
-  first.rows = 1000,
-  next.rows  = 50000,
-  VERBOSE    = TRUE
-)
 
 ```
 
